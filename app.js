@@ -1,8 +1,8 @@
 import * as openpgp from "https://cdn.jsdelivr.net/npm/openpgp@5.11.2/+esm";
 
 /**
- * Chave pública fixa do Órion (pra não depender do MIT/keyserver caindo)
- * A ideia é: colou a mensagem assinada → valida com essa key e já era.
+ * Chave pública fixa do Órion (pra não depender de MIT / keyserver)
+ * cola a mensagem assinada → valida aqui mesmo e acabou
  */
 const ORION_PUBLIC_KEY = `-----BEGIN PGP PUBLIC KEY BLOCK-----
 Version: SKS 1.1.6
@@ -22,9 +22,8 @@ RRgsy9KCAQ==
 -----END PGP PUBLIC KEY BLOCK-----`;
 
 /**
- * Fingerprint “fixado” (anti-troll / anti-troca de chave).
- * Isso aqui saiu daquele pedaço base64 "v4R+zseMCUMGqr2xu/qJ5R/6/d0" => hex:
- * bf847ecec78c094306aabdb1bbfa89e51ffafddd
+ * Fingerprint pra garantir que a key que tá embutida é a certa.
+ * (anti "trocaram a chave" / anti cagada)
  */
 const ORION_FINGERPRINT = "BF847ECEC78C094306AABDB1BBFA89E51FFAFDDD";
 
@@ -32,40 +31,20 @@ const $ = (id) => document.getElementById(id);
 
 const els = {
   blob: $("blob"),
-  pubkey: $("pubkey"), // pode nem existir mais, de boa
   verify: $("verify"),
   status: $("status"),
   meta: $("meta"),
 };
 
 function setStatus(kind, text, meta = "") {
-  if (els.status) els.status.textContent = text;
-  if (els.meta) els.meta.textContent = meta;
+  els.status.textContent = text;
+  els.meta.textContent = meta;
 
-  // corzinha baseada no CSS vars que vc já usou
-  if (els.status) {
-    els.status.style.color =
-      kind === "ok" ? "var(--ok)" :
-      kind === "bad" ? "var(--bad)" :
-      kind === "warn" ? "var(--warn)" :
-      "var(--text)";
-  }
-}
-
-function extractArmoredBlocks(blob) {
-  // pega qualquer bloco ascii armor PGP que estiver no texto (public key, signature, etc)
-  const re = /-----BEGIN PGP ([A-Z ]+)-----[\s\S]*?-----END PGP \1-----/g;
-  const blocks = [];
-  let m;
-  while ((m = re.exec(blob)) !== null) {
-    blocks.push({ type: m[1], armored: m[0] });
-  }
-  return blocks;
-}
-
-function stripArmoredBlocks(blob) {
-  // remove blocos armor e deixa só “o resto” (útil pra detached)
-  return blob.replace(/-----BEGIN PGP ([A-Z ]+)-----[\s\S]*?-----END PGP \1-----/g, "").trim();
+  els.status.style.color =
+    kind === "ok" ? "var(--ok)" :
+    kind === "bad" ? "var(--bad)" :
+    kind === "warn" ? "var(--warn)" :
+    "var(--text)";
 }
 
 function summarizeKey(publicKey) {
@@ -80,16 +59,9 @@ function summarizeKey(publicKey) {
   };
 }
 
-function formatMeta({ publicKey, signature, mode }) {
+function formatMeta({ publicKey, signature }) {
   const k = summarizeKey(publicKey);
 
-  // algumas versões expõem created diferente; aqui é “best effort”
-  const created =
-    signature?.signature?.created
-      ? new Date(signature.signature.created).toISOString()
-      : "—";
-
-  // keyID pode ser objeto; tenta pegar um hex bonitinho
   let keyID = "—";
   if (signature?.keyID) {
     try {
@@ -99,33 +71,34 @@ function formatMeta({ publicKey, signature, mode }) {
     }
   }
 
+  const created =
+    signature?.signature?.created
+      ? new Date(signature.signature.created).toISOString()
+      : "—";
+
   return [
-    `Modo: ${mode}`,
-    `Fingerprint (key): ${k.fingerprint || "—"}`,
+    `Fingerprint: ${k.fingerprint || "—"}`,
     `User IDs: ${k.userIDs?.length ? k.userIDs.join(" | ") : "—"}`,
-    `Key algorithm: ${k.algorithm}`,
-    `Signature created: ${created}`,
-    `KeyID (signature): ${keyID}`,
+    `Algoritmo: ${k.algorithm}`,
+    `KeyID (assinatura): ${keyID}`,
+    `Assinatura criada: ${created}`,
   ].join("\n");
 }
 
 async function loadOrionKey() {
-  // lê a key fixa
   const publicKey = await openpgp.readKey({ armoredKey: ORION_PUBLIC_KEY });
 
-  // confere fingerprint pra garantir que a key embutida é a esperada (paranóia saudável)
+  // conferindo fingerprint, só pra garantir
   const fp = (publicKey.getFingerprint?.() || "").toUpperCase();
   if (fp && fp !== ORION_FINGERPRINT) {
-    // isso aqui só aconteceria se vc colar uma key errada no ORION_PUBLIC_KEY tlgd
     throw new Error(
       `Fingerprint da chave embutida não bate.\nEsperado: ${ORION_FINGERPRINT}\nEncontrado: ${fp}`
     );
   }
-
   return publicKey;
 }
 
-async function verifyCleartextWithOrion(signedMessageArmored) {
+async function verifyOrionCleartext(signedMessageArmored) {
   const publicKey = await loadOrionKey();
   const message = await openpgp.readCleartextMessage({ cleartextMessage: signedMessageArmored });
 
@@ -134,111 +107,43 @@ async function verifyCleartextWithOrion(signedMessageArmored) {
     verificationKeys: publicKey,
   });
 
-  // pode ter mais de 1 assinatura; a gente tenta todas e aceita a primeira que validar
+  // pode ter mais de 1 assinatura, aqui valida a primeira que passar
   for (const sig of result.signatures) {
     try {
       await sig.verified;
-      return { publicKey, signature: sig, mode: "cleartext" };
+      return { publicKey, signature: sig };
     } catch {
       // tenta a próxima
     }
   }
 
-  throw new Error("Nenhuma assinatura válida encontrada (cleartext).");
+  throw new Error("Nenhuma assinatura válida encontrada.");
 }
 
-async function verifyDetachedWithOrion(messageText, signatureArmored) {
-  const publicKey = await loadOrionKey();
-  const message = await openpgp.createMessage({ text: messageText });
-  const signature = await openpgp.readSignature({ armoredSignature: signatureArmored });
+els.verify.addEventListener("click", async () => {
+  const blob = els.blob.value;
 
-  const result = await openpgp.verify({
-    message,
-    signature,
-    verificationKeys: publicKey,
-  });
-
-  for (const sig of result.signatures) {
-    try {
-      await sig.verified;
-      return { publicKey, signature: sig, mode: "detached" };
-    } catch {
-      // tenta a próxima
-    }
+  if (!blob.trim()) {
+    setStatus("warn", "Cole a mensagem assinada do Órion aí.", "");
+    return;
   }
 
-  throw new Error("Assinatura inválida (detached).");
-}
+  // aqui é o ponto: não tem pubkey input. só precisa do SIGNED MESSAGE.
+  if (!blob.includes("-----BEGIN PGP SIGNED MESSAGE-----")) {
+    setStatus("warn", "Isso não parece uma mensagem cleartext assinada (BEGIN PGP SIGNED MESSAGE).", "");
+    return;
+  }
 
-// se o botão não existir, não quebra a página
-if (els.verify) {
-  els.verify.addEventListener("click", async () => {
-    const blob = els.blob?.value || "";
-    const fallbackPub = els.pubkey?.value?.trim?.() || ""; // não uso mais, mas deixei pq seu html tinha
+  try {
+    setStatus("neutral", "Verificando…", "");
 
-    if (!blob.trim()) {
-      setStatus("warn", "Cole a mensagem assinada do Órion aí.", "");
-      return;
-    }
+    const start = blob.indexOf("-----BEGIN PGP SIGNED MESSAGE-----");
+    const signedArmored = blob.slice(start).trim();
 
-    try {
-      setStatus("neutral", "Verificando…", "");
+    const out = await verifyOrionCleartext(signedArmored);
 
-      // a key sempre é a do Órion.
-      void fallbackPub;
-
-      const blocks = extractArmoredBlocks(blob);
-
-      // 1) cleartext é o caso padrão do ARG (BEGIN PGP SIGNED MESSAGE)
-      if (blob.includes("-----BEGIN PGP SIGNED MESSAGE-----")) {
-        const start = blob.indexOf("-----BEGIN PGP SIGNED MESSAGE-----");
-        const signedArmored = blob.slice(start).trim();
-
-        const out = await verifyCleartextWithOrion(signedArmored);
-
-        const fp = (out.publicKey.getFingerprint?.() || "").toUpperCase();
-        const okFp = fp === ORION_FINGERPRINT;
-
-        setStatus(
-          "ok",
-          `✅ Assinatura VÁLIDA (Órion)`,
-          formatMeta(out) + `\n\nFingerprint conferido: ${okFp ? "SIM" : "NÃO"}`
-        );
-        return;
-      }
-
-      // 2) se não for cleartext, tenta detached (caso alguém mande só assinatura + texto)
-      const sigBlock = blocks.find(b => b.type === "SIGNATURE")?.armored;
-      if (!sigBlock) {
-        setStatus("warn", "Não achei 'BEGIN PGP SIGNED MESSAGE' nem 'BEGIN PGP SIGNATURE'.", "");
-        return;
-      }
-
-      const msgText = stripArmoredBlocks(blob);
-      if (!msgText) {
-        setStatus(
-          "warn",
-          "Achei a assinatura, mas não achei a mensagem (texto fora dos blocos).",
-          "Se for detached, cola a mensagem original junto do bloco de assinatura."
-        );
-        return;
-      }
-
-      const out = await verifyDetachedWithOrion(msgText, sigBlock);
-
-      const fp = (out.publicKey.getFingerprint?.() || "").toUpperCase();
-      const okFp = fp === ORION_FINGERPRINT;
-
-      setStatus(
-        "ok",
-        `✅ Assinatura VÁLIDA (Órion)`,
-        formatMeta(out) + `\n\nFingerprint conferido: ${okFp ? "SIM" : "NÃO"}`
-      );
-    } catch (e) {
-      setStatus("bad", "❌ Assinatura INVÁLIDA (ou mensagem alterada)", String(e));
-    }
-  });
-} else {
-  // se tu tiver mexido no HTML e sumiu o botão, isso aqui te lembra tlgd
-  console.warn("Botão #verify não encontrado. Confere seu HTML.");
-}
+    setStatus("ok", "✅ Assinatura VÁLIDA (Órion)", formatMeta(out));
+  } catch (e) {
+    setStatus("bad", "❌ Assinatura INVÁLIDA (ou mensagem alterada)", String(e));
+  }
+});

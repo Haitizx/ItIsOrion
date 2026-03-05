@@ -7,28 +7,23 @@
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
-  <main class="wrap">
-    <header class="header">
-      <h1>PGP Verify</h1>
-      <p class="sub">Cole o conteúdo completo (chave + mensagem/assinatura). Verifica localmente no navegador.</p>
-    </header>
+  <main class="stage">
+    <section class="panel">
+      <div class="mark" aria-hidden="true"></div>
 
-    <section class="card">
+      <h1 class="title">PGP Verify</h1>
+      <p class="subtitle">Cole abaixo a mensagem assinada do Órion (cleartext). A verificação roda localmente no seu navegador.</p>
+
       <div class="field">
-        <label>Cole tudo aqui</label>
-        <textarea id="blob" placeholder="Cole aqui a mensagem assinada / assinatura / chave pública…"></textarea>
+        <label for="blob">Mensagem assinada</label>
+        <textarea id="blob" spellcheck="false" placeholder="-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA512
+
+..."></textarea>
       </div>
 
-      <details class="adv">
-        <summary>Opções avançadas</summary>
-        <div class="field">
-          <label>Chave pública (se não estiver no texto colado)</label>
-          <textarea id="pubkey" placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----&#10;..."></textarea>
-        </div>
-      </details>
-
       <div class="actions">
-        <button class="btn primary" id="verify">Verificar</button>
+        <button class="btn" id="verify">Verificar</button>
       </div>
 
       <section class="result" aria-live="polite">
